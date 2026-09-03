@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: criminal-network-backend
+Version: 1.0.0
+Summary: AI-Powered Criminal Network Analysis System Backend
+Requires-Dist: fastapi
+Requires-Dist: uvicorn
+Requires-Dist: sqlalchemy
+Requires-Dist: pydantic
+Requires-Dist: pydantic-settings
+Requires-Dist: psycopg2-binary
+Requires-Dist: networkx
+Requires-Dist: pandas
+Requires-Dist: scikit-learn
+Requires-Dist: pytest
+Requires-Dist: httpx

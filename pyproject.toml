@@ -1,0 +1,21 @@
+[project]
+name = "criminal-network-backend"
+version = "1.0.0"
+description = "AI-Powered Criminal Network Analysis System Backend"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "sqlalchemy",
+    "pydantic",
+    "pydantic-settings",
+    "psycopg2-binary",
+    "networkx",
+    "pandas",
+    "scikit-learn",
+    "pytest",
+    "httpx"
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
