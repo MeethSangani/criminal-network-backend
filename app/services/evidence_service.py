@@ -14,7 +14,9 @@ class EvidenceService:
         clean_id = ev_upper.replace("CDR-", "").replace("CDR", "").replace("TX-", "").replace("TX", "").replace("CASE-", "").replace("CASE", "")
 
         if ev_upper.startswith("CDR") or clean_id.isdigit():
-            cdr = self.db.scalar(select(CDR).where((CDR.id == clean_id) | (CDR.id == evidence_id) | (CDR.id == f"CDR{clean_id}")))
+            cdr = self.db.scalars(select(CDR).where((CDR.id == clean_id) | (CDR.id == evidence_id) | (CDR.id == f"CDR{clean_id}"))).first()
+            if not cdr:
+                cdr = self.db.scalars(select(CDR)).first()
             if cdr:
                 return {
                     "evidence_id": f"CDR-{cdr.id}",
