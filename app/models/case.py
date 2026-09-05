@@ -17,3 +17,18 @@ class Case(Base):
     lead_investigator: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "case_number": self.case_number,
+            "title": self.title,
+            "type": self.type,
+            "status": self.status,
+            "priority": self.priority,
+            "description": self.description,
+            "lead_investigator": self.lead_investigator,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+

@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
@@ -24,14 +25,29 @@ logger = logging.getLogger("criminal_network.ai_service")
 class AIService:
     """
     Universal Multi-Entity Law Enforcement AI Assistant Service.
-    Supports queries for Persons, Vehicles, Phone Numbers, Bank Accounts, Cases, and Organizations.
-    Uses Google Gemini 2.5 Flash API with RAG database context & automated threat flagging.
+    Supports dynamic, intent-tailored responses for Persons, Vehicles, Phone Numbers, Bank Accounts, Cases, and Organizations.
+    Uses Google Gemini 2.5 Flash API with RAG database context & dynamic prompt synthesis.
     """
 
     def __init__(self, db: Session):
         self.db = db
         self.net_service = NetworkService(db)
         self.anomaly_service = AnomalyService(db)
+
+    def _detect_query_intent(self, question: str) -> str:
+        """Classify investigator question intent for dynamic report formatting."""
+        q = question.lower()
+        if any(w in q for w in ["vehicle", "plate", "car", "driving", "driver", "registration", "license", "veh-", "v0"]):
+            return "VEHICLE_INTENT"
+        elif any(w in q for w in ["money", "account", "bank", "transaction", "wire", "transfer", "hawala", "amount", "tx-", "acc"]):
+            return "FINANCIAL_INTENT"
+        elif any(w in q for w in ["case", "fir", "crime file", "investigation", "syndicate", "c0", "case-"]):
+            return "CASE_INTENT"
+        elif any(w in q for w in ["trigger", "anomaly", "suspicious", "flag", "alert", "severity"]):
+            return "ANOMALY_TRIGGER_INTENT"
+        elif any(w in q for w in ["person", "suspect", "who is", "connection", "associates", "p0", "phone", "cdr"]):
+            return "SUSPECT_PERSON_INTENT"
+        return "GENERAL_INTELLIGENCE"
 
     def _gather_database_context(self, question: str) -> Dict[str, Any]:
         q_upper = question.upper()
@@ -64,7 +80,7 @@ class AIService:
                     if p and p not in matched_persons:
                         matched_persons.append(p)
 
-        # 3. Bank Account Search (by Account Number or ID)
+        # 3. Bank Account Search
         all_accounts = self.db.scalars(select(BankAccount)).all()
         for acc in all_accounts:
             if acc.id.upper() in q_upper or acc.account_number in q_upper:
@@ -74,7 +90,7 @@ class AIService:
                     if p and p not in matched_persons:
                         matched_persons.append(p)
 
-        # 4. Case Search (by Case Number or ID)
+        # 4. Case Search
         all_cases = self.db.scalars(select(Case)).all()
         for c in all_cases:
             if c.id.upper() in q_upper or c.case_number.upper() in q_upper or (c.type and c.type.upper() in q_upper):
@@ -86,7 +102,7 @@ class AIService:
             if o.id.upper() in q_upper or o.name.upper() in q_upper:
                 matched_orgs.append(o)
 
-        # 6. Person Search (by Name or ID)
+        # 6. Person Search
         all_persons = self.db.scalars(select(Person)).all()
         for p in all_persons:
             if p.id.upper() in q_upper or (p.first_name and p.first_name.upper() in q_upper) or (p.last_name and p.last_name.upper() in q_upper) or (p.full_name and p.full_name.upper() in q_upper):
@@ -98,105 +114,106 @@ class AIService:
             matched_persons.extend(high_risk)
 
         person_ids = [p.id for p in matched_persons]
-
-        # 7. Pathfinding between first two mentioned persons
-        paths_context = []
-        if len(person_ids) >= 2:
-            path_res = self.net_service.find_shortest_path(person_ids[0], person_ids[1])
-            if path_res:
-                paths_context.append(path_res.model_dump() if hasattr(path_res, "model_dump") else dict(path_res))
-
-        # 8. Relationships / Graph Edges
         rel_context = []
         if person_ids:
             rels = self.db.scalars(
                 select(Relationship).where(
-                    or_(Relationship.source_id.in_(person_ids), Relationship.target_id.in_(person_ids))
-                ).limit(15)
+                    or_(
+                        Relationship.source_id.in_(person_ids),
+                        Relationship.target_id.in_(person_ids)
+                    )
+                )
             ).all()
-            for r in rels:
+            for r in rels[:10]:
                 rel_context.append({
-                    "id": r.id,
-                    "source": f"{r.source_type}:{r.source_id}",
-                    "relationship": r.relationship_type,
-                    "target": f"{r.target_type}:{r.target_id}",
-                    "confidence": r.confidence_score
+                    "source": r.source_id,
+                    "target": r.target_id,
+                    "type": getattr(r, "relationship_type", "ASSOCIATED"),
+                    "weight": getattr(r, "confidence_score", 1.0)
                 })
 
-        # 9. Call Detail Records (CDRs)
         cdrs_found = []
-        phone_nums = [ph.phone_number for ph in matched_phones]
-        if person_ids or phone_nums:
+        if matched_phones:
+            phone_nums = [ph.phone_number for ph in matched_phones]
             cdrs = self.db.scalars(
                 select(CDR).where(
                     or_(
-                        CDR.caller_person_id.in_(person_ids),
-                        CDR.receiver_person_id.in_(person_ids),
-                        CDR.caller_phone.in_(phone_nums),
-                        CDR.receiver_phone.in_(phone_nums)
+                        CDR.caller_number.in_(phone_nums),
+                        CDR.receiver_number.in_(phone_nums)
                     )
-                ).limit(15)
+                ).limit(10)
             ).all()
             for c in cdrs:
                 cdrs_found.append({
                     "id": c.id,
-                    "caller": c.caller_person_id or c.caller_phone,
-                    "receiver": c.receiver_person_id or c.receiver_phone,
-                    "duration_seconds": c.duration_seconds,
-                    "timestamp": str(c.timestamp)
+                    "caller": c.caller_number,
+                    "receiver": c.receiver_number,
+                    "duration_sec": c.duration_seconds,
+                    "timestamp": c.timestamp.isoformat() if c.timestamp else None
                 })
 
-        # 10. Financial Transactions
         txs_found = []
-        acc_ids = [acc.id for acc in matched_accounts]
-        if person_ids or acc_ids:
+        if matched_accounts:
+            acc_nums = [a.account_number for a in matched_accounts]
             txs = self.db.scalars(
                 select(Transaction).where(
                     or_(
-                        Transaction.sender_person_id.in_(person_ids),
-                        Transaction.receiver_person_id.in_(person_ids),
-                        Transaction.sender_account.in_(acc_ids),
-                        Transaction.receiver_account.in_(acc_ids)
+                        Transaction.sender_account.in_(acc_nums),
+                        Transaction.receiver_account.in_(acc_nums)
                     )
-                ).limit(15)
+                ).limit(10)
             ).all()
             for t in txs:
                 txs_found.append({
                     "id": t.id,
-                    "sender": t.sender_person_id or t.sender_account,
-                    "receiver": t.receiver_person_id or t.receiver_account,
-                    "amount": t.amount,
-                    "type": t.transaction_type,
-                    "timestamp": str(t.timestamp)
+                    "sender": t.sender_account,
+                    "receiver": t.receiver_account,
+                    "amount": float(t.amount) if t.amount else 0,
+                    "timestamp": t.timestamp.isoformat() if t.timestamp else None
                 })
 
-        # 11. Anomalies
-        all_anomalies = self.anomaly_service.get_all_anomalies()
-        matched_anomalies = [a for a in all_anomalies if any(p_id in str(a) for p_id in person_ids)] if person_ids else all_anomalies[:5]
+        paths_context = []
+        if len(person_ids) >= 2:
+            try:
+                p_path = self.net_service.get_shortest_path(person_ids[0], person_ids[1])
+                if p_path:
+                    paths_context.append(p_path)
+            except Exception:
+                pass
 
-        # 12. Determine Flag & Threat Assessment
-        flag_status = "CLEAN"
-        risk_score = 45
-        if matched_vehicles:
-            flag_status = "FLAGGED: SUSPECT VEHICLE LINK"
-            risk_score = 78
-        if any(p.risk_level == "HIGH" for p in matched_persons):
-            flag_status = "FLAGGED: HIGH RISK SUSPECT"
-            risk_score = 92
-        if len(txs_found) > 5 or any(t["amount"] > 50000 for t in txs_found):
-            flag_status = "FLAGGED: HAWALA / FINANCIAL SPIKE"
-            risk_score = 88
+        matched_anomalies = self.anomaly_service.detect_anomalies()
+        if person_ids:
+            matched_anomalies = [a for a in matched_anomalies if a.get("entity_id") in person_ids or a.get("target_id") in person_ids]
+
+        flag_status = "FLAGGED: HIGH RISK" if any(p.risk_level == "HIGH" for p in matched_persons) else "UNDER OBSERVATION"
+        risk_score = 88 if flag_status == "FLAGGED: HIGH RISK" else 65
 
         return {
-            "query": question,
+            "intent": self._detect_query_intent(question),
             "flag_status": flag_status,
             "risk_score": risk_score,
-            "matched_vehicles": [{"id": v.id, "plate": v.license_plate, "make": v.make, "model": v.model, "owner_id": v.owner_id} for v in matched_vehicles],
-            "matched_phones": [{"id": ph.id, "number": ph.phone_number, "carrier": ph.carrier, "owner_id": ph.owner_id} for ph in matched_phones],
+            "matched_vehicles": [
+                {
+                    "id": v.id,
+                    "plate": v.license_plate,
+                    "make": v.make,
+                    "model": v.model,
+                    "color": v.color,
+                    "owner_id": v.owner_id
+                } for v in matched_vehicles
+            ],
+            "persons_profile": [
+                {
+                    "id": p.id,
+                    "full_name": p.full_name,
+                    "occupation": p.occupation,
+                    "status": p.status,
+                    "risk_level": p.risk_level
+                } for p in matched_persons
+            ],
+            "matched_phones": [{"id": ph.id, "number": ph.phone_number, "owner_id": ph.owner_id} for ph in matched_phones],
             "matched_accounts": [{"id": acc.id, "number": acc.account_number, "bank": acc.bank_name, "owner_id": acc.owner_id} for acc in matched_accounts],
-            "matched_cases": [{"id": c.id, "number": c.case_number, "type": c.type, "status": c.status, "priority": c.priority, "description": c.description} for c in matched_cases],
-            "matched_organizations": [{"id": o.id, "name": o.name, "type": o.type} for o in matched_orgs],
-            "persons_profile": [{"id": p.id, "full_name": p.full_name, "occupation": p.occupation, "risk_level": p.risk_level, "status": p.status, "notes": p.notes} for p in matched_persons],
+            "matched_cases": [{"id": cs.id, "number": cs.case_number, "title": cs.title, "status": cs.status} for cs in matched_cases],
             "relationships": rel_context,
             "paths": paths_context,
             "call_logs": cdrs_found,
@@ -206,9 +223,12 @@ class AIService:
 
     def _query_gemini_api(self, api_key: str, question: str, db_context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         try:
+            intent = db_context.get("intent", "GENERAL_INTELLIGENCE")
             prompt = f"""
 You are an elite Law Enforcement AI Criminal Intelligence Analyst for a national security agency.
-Analyze the investigator's query and the real-time database context below. Provide a comprehensive, professional, highly structured Executive Intelligence Report.
+Analyze the investigator's query directly and synthesize an answer based on the real-time database context (RAG) below.
+
+Query Intent Category: {intent}
 
 === REAL-TIME DATABASE CONTEXT (RAG) ===
 {json_serialize_context(db_context)}
@@ -216,36 +236,13 @@ Analyze the investigator's query and the real-time database context below. Provi
 === INVESTIGATOR QUERY ===
 "{question}"
 
-=== MANDATORY REPORT TEMPLATE FORMAT ===
-Format your entire response using the following structured Markdown layout:
-
-# [LAW ENFORCEMENT INTELLIGENCE REPORT]
-**Primary Target / Subject Analyzed:** [Name / Vehicle Plate / Phone / Account / ID]
-**Investigative Threat Status:** [{db_context.get('flag_status', 'FLAGGED: HIGH RISK')}]
-**Composite Threat Risk Score:** [{db_context.get('risk_score', 85)} / 100]
-
----
-
-## 1. Primary Subject & Entity Overview
-- Detail the exact entity details (Vehicle Plate, Owner Name, Phone, Account, Occupation, Risk Level, Status).
-
-## 2. Network & Case Connections
-- Detail how this entity is linked to other suspects, vehicles, phone numbers, bank accounts, organizations, or active crime case files.
-- Mention specific multi-hop connections or path links found in the database graph.
-
-## 3. Verified Evidence Traceability Log
-List exact IDs for verification in court:
-- **Call Detail Records (CDRs):** [List CDR IDs e.g. CDR00001]
-- **Financial Transactions:** [List TX IDs e.g. TX00001]
-- **Case Files & Vehicles:** [List Case IDs and Vehicle IDs]
-
-## 4. Suspicious Pattern & Anomaly Triggers
-- Explain any unusual call durations, suspicious bank wire amounts, or flagged high-risk behaviors.
-
-## 5. Actionable Next Steps for Law Enforcement
-1. [Recommendation 1 - e.g. Issue surveillance warrant / intercept calls]
-2. [Recommendation 2 - e.g. Freeze linked bank account]
-3. [Recommendation 3 - e.g. Interrogate primary driver/owner]
+=== INSTRUCTIONS ===
+1. Answer the question directly in your opening summary paragraph.
+2. Tailor your response dynamically to the query intent ({intent}).
+3. Use clean Markdown headings (`#`, `##`, `###`), tables, and bold bullet points.
+4. Detail linked entities (Person IDs, Vehicle Plates, Phone Numbers, Accounts, Case File IDs).
+5. Highlight threat risk levels and suspicious anomalies.
+6. Provide 3 specific, actionable next steps for law enforcement.
 """
 
             model_name = getattr(settings, "GEMINI_MODEL", "gemini-2.5-flash")
@@ -274,12 +271,13 @@ List exact IDs for verification in court:
                 return {
                     "answer": answer_text,
                     "engine": f"Google Gemini API ({model_name})",
+                    "intent": intent,
                     "flag_status": db_context.get("flag_status"),
                     "risk_score": db_context.get("risk_score"),
                     "evidence": self._extract_evidence_ids(db_context),
                     "connected_entities": self._extract_connected_entities(db_context),
-                    "reason": "Generated using real-time RAG context retrieval and Gemini 2.5 Flash intelligence reasoning.",
-                    "limitations": "AI-generated investigative report. Verify all evidence against primary database records before court filings."
+                    "reason": "Dynamic intent-tailored response synthesized using real-time RAG context retrieval and Gemini 2.5 Flash.",
+                    "limitations": "AI-generated intelligence report. Verify all evidence against primary database records before court filings."
                 }
         except Exception as e:
             logger.error(f"Gemini API execution failed: {e}")
@@ -311,54 +309,100 @@ List exact IDs for verification in court:
         return list(set(entities))
 
     def _fallback_local_engine(self, question: str, db_context: Dict[str, Any]) -> Dict[str, Any]:
+        intent = db_context.get("intent", "GENERAL_INTELLIGENCE")
         vehicles = db_context.get("matched_vehicles", [])
         persons = db_context.get("persons_profile", [])
         cases = db_context.get("matched_cases", [])
         cdrs = db_context.get("call_logs", [])
         txs = db_context.get("financial_transactions", [])
+        anomalies = db_context.get("anomalies", [])
         
         lines = []
-        lines.append("# LAW ENFORCEMENT INTELLIGENCE REPORT (OFFLINE ENGINE)")
-        lines.append(f"**Investigative Threat Status:** {db_context.get('flag_status', 'FLAGGED')}")
-        lines.append(f"**Composite Risk Score:** {db_context.get('risk_score', 80)} / 100\n")
-        lines.append("---")
-        
-        if vehicles:
-            v = vehicles[0]
-            lines.append(f"## 1. Primary Vehicle Details")
-            lines.append(f"- **Vehicle ID:** {v['id']} | **Plate:** {v['plate']}")
-            lines.append(f"- **Make/Model:** {v['make']} {v['model']}")
-            lines.append(f"- **Registered Owner ID:** {v['owner_id']}")
-        elif persons:
-            p = persons[0]
-            lines.append(f"## 1. Primary Suspect Details")
-            lines.append(f"- **Person ID:** {p['id']} | **Full Name:** {p['full_name']}")
-            lines.append(f"- **Occupation:** {p['occupation']} | **Status:** {p['status']}")
-            lines.append(f"- **Risk Level:** {p['risk_level']}")
+
+        if intent == "VEHICLE_INTENT":
+            lines.append("# VEHICLE INTELLIGENCE & DRIVER ANALYSIS")
+            lines.append(f"**Query Direct Answer:** Analyzed vehicle records for query: *\"{question}\"*")
+            lines.append(f"**Threat Status:** {db_context.get('flag_status', 'UNDER OBSERVATION')}")
+            lines.append(f"**Risk Score:** {db_context.get('risk_score', 75)} / 100\n---")
+            if vehicles:
+                v = vehicles[0]
+                lines.append(f"## 1. Vehicle Registration & Ownership")
+                lines.append(f"- **Vehicle ID:** `{v['id']}` | **License Plate:** `{v['plate']}`")
+                lines.append(f"- **Make / Model:** {v['make']} {v['model']} ({v['color']})")
+                lines.append(f"- **Registered Owner ID:** `{v['owner_id'] or 'Unknown'}`")
+            else:
+                lines.append("## 1. Vehicle Registration")
+                lines.append("- No direct matching vehicle plate found in immediate context; checking linked suspect vehicles.")
+            if persons:
+                lines.append(f"\n## 2. Suspected Driver & Associated Person")
+                p = persons[0]
+                lines.append(f"- **Suspect ID:** `{p['id']}` | **Full Name:** {p['full_name']}")
+                lines.append(f"- **Occupation:** {p['occupation']} | **Risk Level:** **{p['risk_level']}**")
+
+        elif intent == "FINANCIAL_INTENT":
+            lines.append("# FINANCIAL TRANSACTION & HAWALA ANALYSIS")
+            lines.append(f"**Query Direct Answer:** Audited financial accounts and wire transfers for query: *\"{question}\"*")
+            lines.append(f"**Threat Status:** {db_context.get('flag_status', 'UNDER OBSERVATION')}")
+            lines.append(f"**Risk Score:** {db_context.get('risk_score', 85)} / 100\n---")
+            lines.append(f"## 1. Transaction Volume & Account Overview")
+            lines.append(f"- **Flagged Transactions Found:** {len(txs)} wire transfers")
+            if txs:
+                total_vol = sum(t['amount'] for t in txs)
+                lines.append(f"- **Cumulative Transfer Volume:** ₹{total_vol:,.2f}")
+                lines.append(f"- **Primary Sender Account:** `{txs[0]['sender']}`")
+                lines.append(f"- **Primary Receiver Account:** `{txs[0]['receiver']}`")
+            if persons:
+                lines.append(f"\n## 2. Account Holder Profile")
+                lines.append(f"- **Linked Suspect ID:** `{persons[0]['id']}` ({persons[0]['full_name']})")
+
+        elif intent == "CASE_INTENT":
+            lines.append("# CASE FILE & SYNDICATE INVESTIGATION REPORT")
+            lines.append(f"**Query Direct Answer:** Retrieved investigation file details for query: *\"{question}\"*")
+            lines.append(f"**Threat Status:** {db_context.get('flag_status', 'FLAGGED')}\n---")
+            if cases:
+                c = cases[0]
+                lines.append(f"## 1. Primary Case File Summary")
+                lines.append(f"- **Case ID:** `{c['id']}` | **Case Number:** `{c['number']}`")
+                lines.append(f"- **Title:** {c['title']} | **Status:** `{c['status']}`")
+            lines.append(f"\n## 2. Associated Suspects & Evidence")
+            lines.append(f"- **Key Persons Linked:** {', '.join([f'`{p['id']}` ({p['full_name']})' for p in persons[:3]]) if persons else 'None'}")
+            lines.append(f"- **Evidence Logs:** {len(cdrs)} call logs, {len(txs)} wire transfers")
+
+        elif intent == "ANOMALY_TRIGGER_INTENT":
+            lines.append("# INVESTIGATIVE ANOMALY & PATTERN TRIGGER ALERT")
+            lines.append(f"**Query Direct Answer:** Triggered investigative indicators for query: *\"{question}\"*")
+            lines.append(f"**Severity Level:** **HIGH**\n---")
+            lines.append("## 1. Flagged Anomaly Events")
+            for a in anomalies[:4]:
+                lines.append(f"- **Entity:** `{a.get('entity_id')}` | **Type:** `{a.get('type')}` | **Severity:** `{a.get('severity')}`")
+                lines.append(f"  *Reasoning:* {a.get('reason')}")
+
         else:
-            lines.append(f"## 1. Query Analysis")
-            lines.append(f"- Query '{question}' matched database graph records.")
+            lines.append("# LAW ENFORCEMENT EXECUTIVE INTELLIGENCE REPORT")
+            lines.append(f"**Query Analyzed:** *\"{question}\"*")
+            lines.append(f"**Investigative Status:** {db_context.get('flag_status', 'UNDER OBSERVATION')}")
+            lines.append(f"**Risk Score:** {db_context.get('risk_score', 75)} / 100\n---")
+            lines.append("## 1. Intelligence Summary")
+            if persons:
+                lines.append(f"- **Primary Subject:** `{persons[0]['id']}` — {persons[0]['full_name']} ({persons[0]['occupation']})")
+                lines.append(f"- **Threat Level:** **{persons[0]['risk_level']}**")
+            lines.append(f"- **Connected Graph Nodes:** {len(persons)} persons, {len(cdrs)} call logs, {len(txs)} wire transfers")
 
-        lines.append(f"\n## 2. Connected Network & Evidence")
-        lines.append(f"- **Connected Persons:** {', '.join([p['id'] for p in persons[:4]]) if persons else 'None'}")
-        lines.append(f"- **Call Logs (CDRs):** {len(cdrs)} records found")
-        lines.append(f"- **Financial Transactions:** {len(txs)} wire transfers found")
-        if cases:
-            lines.append(f"- **Associated Case Files:** {', '.join([c['number'] for c in cases])}")
-
-        lines.append(f"\n## 3. Actionable Next Steps")
-        lines.append("1. Issue law enforcement trace on linked communications and vehicle movements.")
-        lines.append("2. Freeze associated financial accounts pending further investigative audit.")
+        lines.append(f"\n## Actionable Law Enforcement Next Steps")
+        lines.append("1. **Surveillance & Intercept:** Issue interception order on flagged communication endpoints and vehicle movements.")
+        lines.append("2. **Asset Freeze:** Freeze linked bank accounts pending formal financial audit.")
+        lines.append("3. **Interrogation:** Summons primary suspect for formal statement under criminal procedure.")
 
         return {
             "answer": "\n".join(lines),
-            "engine": "Local Deterministic Graph Engine (Offline Fallback)",
+            "engine": "Dynamic Intent Local Graph Engine",
+            "intent": intent,
             "flag_status": db_context.get("flag_status"),
             "risk_score": db_context.get("risk_score"),
             "evidence": self._extract_evidence_ids(db_context),
             "connected_entities": self._extract_connected_entities(db_context),
-            "reason": "Query processed using local database graph context extraction.",
-            "limitations": "Add GEMINI_API_KEY to .env to enable live Gemini LLM intelligence reporting."
+            "reason": f"Dynamic {intent} intelligence generated using local graph context.",
+            "limitations": "Set GEMINI_API_KEY in .env for full Gemini 2.5 Flash AI reasoning."
         }
 
     def process_query(self, question: str) -> Dict[str, Any]:
@@ -372,5 +416,4 @@ List exact IDs for verification in court:
         return self._fallback_local_engine(question, db_context)
 
 def json_serialize_context(ctx: Dict[str, Any]) -> str:
-    import json
     return json.dumps(ctx, indent=2, default=str)

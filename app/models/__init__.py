@@ -10,6 +10,10 @@ from app.models.transaction import Transaction
 from app.models.meeting import Meeting
 from app.models.surveillance import Surveillance
 from app.models.relationship import Relationship
+from app.models.user import User, UserRole
+from app.models.citizen_report import CitizenReport, ReportStatus
+from app.models.report_review_log import ReportReviewLog
+from app.models.audit_log import AuditLog
 
 __all__ = [
     "Person",
@@ -24,4 +28,10 @@ __all__ = [
     "Meeting",
     "Surveillance",
     "Relationship",
+    "User",
+    "UserRole",
+    "CitizenReport",
+    "ReportStatus",
+    "ReportReviewLog",
+    "AuditLog",
 ]

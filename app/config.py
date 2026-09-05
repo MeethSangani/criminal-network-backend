@@ -1,5 +1,6 @@
 import os
 from typing import List, Optional
+from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
@@ -17,6 +18,11 @@ class Settings(BaseSettings):
         "postgresql://postgres:postgres@localhost:5432/criminal_network"
     )
     
+    # JWT Authentication Settings
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "sih-2026-criminal-network-analysis-secret-key-98234")
+    ALGORITHM: str = os.getenv("ALGORITHM", "HS256")
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
+
     # AI API Keys
     GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY", None)
     OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY", None)
@@ -34,9 +40,11 @@ class Settings(BaseSettings):
             return []
         return [origin.strip() for origin in self.CORS_ORIGINS_RAW.split(",") if origin.strip()]
 
-    class Config:
-        case_sensitive = True
-        env_file = ".env"
-        extra = "allow"
+    model_config = ConfigDict(
+        case_sensitive=True,
+        env_file=".env",
+        extra="allow"
+    )
 
 settings = Settings()
+

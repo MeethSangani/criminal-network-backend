@@ -50,3 +50,30 @@ def resolve_person_entity(db: Session, person_id: str) -> Dict[str, Any]:
         "aliases": list(aliases),
         "matches": matches
     }
+
+def match_person(db: Session, person_data: Dict[str, Any]) -> Dict[str, Any]:
+    full_name = person_data.get("full_name", "")
+    if not full_name:
+        return {"match_found": False, "confidence": 0.0}
+    
+    all_persons = db.scalars(select(Person)).all()
+    for p in all_persons:
+        if p.full_name and p.full_name.strip().lower() == full_name.strip().lower():
+            return {"match_found": True, "matched_entity_id": p.id, "confidence": 1.0}
+        if p.full_name and (full_name.strip().lower() in p.full_name.strip().lower() or p.full_name.strip().lower() in full_name.strip().lower()):
+            return {"match_found": True, "matched_entity_id": p.id, "confidence": 0.85}
+
+    return {"match_found": False, "confidence": 0.0}
+
+def match_vehicle(db: Session, vehicle_data: Dict[str, Any]) -> Dict[str, Any]:
+    plate = vehicle_data.get("license_plate", "")
+    if not plate:
+        return {"match_found": False, "confidence": 0.0}
+    
+    from app.models.vehicle import Vehicle
+    veh = db.scalar(select(Vehicle).where(Vehicle.license_plate.ilike(plate)))
+    if veh:
+        return {"match_found": True, "matched_entity_id": veh.id, "confidence": 1.0}
+    
+    return {"match_found": False, "confidence": 0.0}
+

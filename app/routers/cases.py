@@ -1,11 +1,21 @@
+from typing import Optional
 from fastapi import APIRouter, Depends, Query, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.services.case_service import CaseService
+from app.services.ingestion_service import IngestionService
 from app.schemas.case import CaseResponse, CaseListResponse
 from app.schemas.person import PersonResponse
+from app.deps import get_current_investigator_or_admin
+from app.models.user import User
 
 router = APIRouter(prefix="/cases", tags=["Cases"])
+
+class CaseCreateRequest(BaseModel):
+    title: str
+    description: str
+    type: Optional[str] = "GENERAL"
 
 @router.get("", response_model=CaseListResponse)
 def get_cases(
@@ -20,6 +30,23 @@ def get_cases(
         "total": total,
         "data": [CaseResponse.model_validate(c) for c in cases]
     }
+
+@router.post("", status_code=status.HTTP_201_CREATED)
+def create_case_ingestion(
+    payload: CaseCreateRequest,
+    current_user: User = Depends(get_current_investigator_or_admin),
+    db: Session = Depends(get_db)
+):
+    """Create a new case file and incrementally extract, resolve, and link entities."""
+    ingestion = IngestionService(db)
+    result = ingestion.ingest_case_and_entities(
+        title=payload.title,
+        description=payload.description,
+        case_type=payload.type,
+        created_by_id=current_user.id,
+        created_by_username=current_user.username
+    )
+    return result
 
 @router.get("/{case_id}")
 def get_case(case_id: str, db: Session = Depends(get_db)):

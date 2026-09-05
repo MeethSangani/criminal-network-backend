@@ -11,6 +11,9 @@ from app.routers.nlp import router as nlp_router
 from app.routers.evidence import router as evidence_router
 from app.routers.ai import router as ai_router
 from app.routers.simulation import router as simulation_router
+from app.routers.auth import router as auth_router
+from app.routers.citizen_reports import router as citizen_reports_router
+from app.routers.admin import router as admin_router
 
 __all__ = [
     "health_router",
@@ -26,4 +29,7 @@ __all__ = [
     "evidence_router",
     "ai_router",
     "simulation_router",
+    "auth_router",
+    "citizen_reports_router",
+    "admin_router",
 ]

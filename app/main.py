@@ -3,6 +3,8 @@ from fastapi import FastAPI, Request, HTTPException, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
+from app.database import engine, Base, SessionLocal
+from app.deps import seed_demo_users_if_needed
 from app.routers import (
     health_router,
     persons_router,
@@ -16,7 +18,10 @@ from app.routers import (
     nlp_router,
     evidence_router,
     ai_router,
-    simulation_router
+    simulation_router,
+    auth_router,
+    citizen_reports_router,
+    admin_router
 )
 
 # Configure Logging
@@ -25,6 +30,16 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger("criminal_network.main")
+
+# Safely create new database tables without dropping existing data
+try:
+    Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    seed_demo_users_if_needed(db)
+    db.close()
+    logger.info("Database schemas and demo accounts initialized safely.")
+except Exception as e:
+    logger.warning(f"Database initialization step: {e}")
 
 # Initialize FastAPI Application
 app = FastAPI(
@@ -79,6 +94,9 @@ async def generic_exception_handler(request: Request, exc: Exception):
 
 # Register API v1 Routers
 app.include_router(health_router, prefix=settings.API_V1_PREFIX)
+app.include_router(auth_router, prefix=settings.API_V1_PREFIX)
+app.include_router(citizen_reports_router, prefix=settings.API_V1_PREFIX)
+app.include_router(admin_router, prefix=settings.API_V1_PREFIX)
 app.include_router(persons_router, prefix=settings.API_V1_PREFIX)
 app.include_router(search_router, prefix=settings.API_V1_PREFIX)
 app.include_router(cases_router, prefix=settings.API_V1_PREFIX)
